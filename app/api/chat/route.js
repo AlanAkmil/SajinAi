@@ -1,39 +1,167 @@
+import axios from 'axios'
+import crypto from 'crypto'
+
 export const runtime = 'nodejs'
 
 export async function POST(req) {
-  const { messages } = await req.json()
+  try {
+    const { messages } = await req.json()
+    const lastMessage = messages?.[messages.length - 1]?.content ?? ''
 
-  // ============================================
-  // TODO(Abras): GANTI BAGIAN INI DENGAN SCRAPE LU
-  // ============================================
-  // Frontend nerima dua jenis response:
-  //
-  // 1) STREAMING (disarankan) — balikin ReadableStream isinya
-  //    potongan teks biasa (bukan JSON per-chunk), contoh liat
-  //    di bawah. Frontend bakal append tiap chunk secara live.
-  //
-  // 2) NON-STREAMING — balikin Response.json({ content: "..." })
-  //    kalau scrape lu ga support stream, frontend otomatis fallback.
-  //
-  // `messages` di sini isinya array riwayat chat: [{ role, content }]
-  // role: 'user' | 'assistant'
-  // ============================================
+    if (!lastMessage) {
+      return Response.json({ error: 'Pesan tidak boleh kosong.' }, { status: 400 })
+    }
 
-  const lastMessage = messages?.[messages.length - 1]?.content ?? ''
-  const dummyReply = `[DUMMY] Sajin belum konek ke scrape asli. Lu ngirim: "${lastMessage}". Sambungin scrape AI lu di app/api/chat/route.js, cuy.`
+    const timestamp = Date.now()
+    const requestId = crypto.randomUUID()
 
-  const encoder = new TextEncoder()
-  const stream = new ReadableStream({
-    async start(controller) {
-      for (const word of dummyReply.split(' ')) {
-        controller.enqueue(encoder.encode(word + ' '))
-        await new Promise((r) => setTimeout(r, 45))
+    // 1. Buat sesi chat baru di Qwen
+    const payload = {
+      chatId: '',
+      models: ['qwen3.7-plus'],
+      project_id: '',
+      timestamp: timestamp,
+      chat_type: 't2t',
+      chat_mode: 'guest',
+    }
+
+    const commonHeaders = {
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Content-Type': 'application/json',
+      'Version': '0.2.87',
+      'source': 'h5',
+      'Timezone': new Date().toString(),
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Origin': 'https://chat.qwen.ai',
+      'Referer': 'https://chat.qwen.ai/',
+      'bx-umidtoken': 'T2gAbheReRRQHQREJVinIV71av3i7ot6pOw4-aGlkCMoJP_3Q-npd7CvjvEWL6LLwP8=',
+      'bx-v': '2.5.37',
+      'bx-ua':
+        '234!tpheKyk/eePWWb2XiwXpDRnItRRzqIvLlMR3NmmmXTWhPcwRQE3qOwbHD2uTUNHEiUIq6aN9b2dmDLkokv5sdDt+bFa8jwLwLKSXEBPRnfwqqVADTUsgeLCVZ3oHQQVNhMhuVk+H9iHj81MmOpuQc4btZZodQQymhsWZn3TH9iJXPkE7A3s/ce47Z3oHQQ1beX2vZ3Td9iJTCvkZQpknc247nZodQCyNhsfAZ3wTdiyKCPsZQkkic247SZZ0QCyDlsfWepDTH1dTCPO+/ks/c24HjZodQCyDPMf5ef+TMAJHhXkZQks/cs5TZJWHQCVmhNn0Z3wH95HBcfAhQppvcs5Tn3oHOc+tpLXjZ3wk9iJThpheQkp/cs4TrVcyQCymJstkZ0wd9Ad7hpoZQksvGdV7jtQ4PFXB/fguay/e9Ad7hIZZQpPVJM5YZYwH7CIWhMk+pkUm9is7hpoOnf3vcs4TgPmdCtYm5xOcZ3wH9uyMipZfCn1uc8V6AZodQQbHisWsZZT398VoinoZQkfLCs4HflodEm6RhxWZnTQ79Ad7hfrhm9TJgDl9T1ycsUr+e8rpHTjCprGxWovR6rtBAENkt1NRPTwxiJvft8rGaSmEwN5XcVVuF7IHJ1VFA+mDaHubg0Pc4kS+NIcbzHDBrEIADjVVeHmsS3l768jOwKbtN8ZBFaHdAtVaZPer49gHXBjR48cga/itS0OL3ZgPH1ZxgYKpo+X8pAreGivW6/lntE2J03Ulq7o7hO4tqCiA1byhUzpoS3Xm4oyaFw9cP8LM5lcn6DojS+UfhKKbcLNYu1C4QP7BfPaZYGHiZJtL1wu18r039RogUPUxlmvn4pFjUkvfTLqmRP+Q1HJ2hn7LoS8PPota+aekcc91AsByobUXd3tdDYMqSBvVhXAsBq8hYf734z1Is2e0YEQgR2R00wZDdZ8gh9Ffm8RaYPwFpP9rbbphI7S4sKgleTA9zPPHVFJLAm4Tg10Qgz9mK4SLLYAtTBXHh+mbCwnboUQDEAfQkS34ZVvgb7uah7sFZScx2HCGJYgEVtCSch5Q+hl+icWUvEIZGSVxhTqBG/MLdLFABcv4wN1kjlweaRhqS0C8moGPt/wwVSPxC23ave0IukdwkIi2iTnvIa6h7JhwRQKpCoq3cw+feZduAQg3rm1UzfvXHkdRQVYHMFTYYaRiuhCOpCgBHjD9qoVtu112jNNFeiRKOU/qdZUT8/gkJ1sdDhvu0RNbLTZNsl+d9qK0ue4sVB/+0oTxoYPGg5bjkyEnJ4aB+oHJ4zCIAgOmjx0W9odNQotmpcNg3LYpa7uQh2O/edDSFzrdhJ7Q57EA+NMgVcAFDyYAOl2/Vmslf1PwcnaIWFKg/bu/kkU7Hhsb9+esvqDprCzYznjmL5bDd40Oliz6JtexpAfT5YBPF45v7zXfwf11Qe0EDCnLPFP7qnlZM7qSJykqY7QOWhgSXZtk33xN73nu3de6MbPy+AzxQ6YQuDJCq40vgEhHmR/qL7QanEhjPDB/RhBbhLYoBS85rhB/+iTnno1Q+cVxCaaBbKOZ1ROYw1YK0xBzRQH2Fvii0S5fubeeRN3yabh7gVmL+J3XlPuojSS/oGFehzW1BRvEfDon6s0Z+bmxpbe8FKUpHRYYwLl405EO6TB5VwvO5VBvSkujJ/03HoXg7zcQJG19AxNBj8gDmb+ImJd7f7Ld6Lb5fvAmrQpBjzjCQpAlSME/4rRNRJW6gLXEWq4Q',
+      'X-Request-Id': requestId,
+    }
+
+    const sessionResponse = await axios.post('https://chat.qwen.ai/api/v2/chats/new', payload, {
+      headers: commonHeaders,
+    })
+
+    if (!sessionResponse.data?.success || !sessionResponse.data?.data?.id) {
+      throw new Error('Gagal membuat sesi chat baru: ' + JSON.stringify(sessionResponse.data))
+    }
+
+    const chatId = sessionResponse.data.data.id
+
+    // 2. Request completions dengan format stream
+    const completionPayload = {
+      stream: true,
+      version: '2.1',
+      incremental_output: true,
+      chatId: chatId,
+      parentId: '',
+      chat_id: chatId,
+      chat_mode: 'guest',
+      model: 'qwen3.7-plus',
+      parent_id: null,
+      messages: [
+        {
+          id: null,
+          fid: crypto.randomUUID(),
+          parentId: null,
+          childrenIds: [],
+          role: 'user',
+          content: lastMessage,
+          user_action: 'chat',
+          files: [],
+          timestamp: Math.floor(timestamp / 1000),
+          models: ['qwen3.7-plus'],
+          model: '',
+          chat_type: 't2t',
+          feature_config: {
+            thinking_enabled: true,
+            output_schema: 'phase',
+            research_mode: 'normal',
+            auto_thinking: true,
+            thinking_mode: 'Auto',
+            thinking_format: 'summary',
+            auto_search: true,
+          },
+          extra: {
+            meta: { subChatType: 't2t' },
+          },
+          sub_chat_type: 't2t',
+          parent_id: null,
+        },
+      ],
+      timestamp: Math.floor(Date.now() / 1000),
+    }
+
+    const qwenResponse = await axios.post(
+      `https://chat.qwen.ai/api/v2/chat/completions?chat_id=${chatId}`,
+      completionPayload,
+      {
+        headers: {
+          ...commonHeaders,
+          Accept: 'text/event-stream',
+          'X-Request-Id': crypto.randomUUID(),
+        },
+        responseType: 'stream',
       }
-      controller.close()
-    },
-  })
+    )
 
-  return new Response(stream, {
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-  })
+    // 3. Pipe stream dari Axios langsung ke ReadableStream milik Next.js
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(controller) {
+        let buffer = ''
+
+        qwenResponse.data.on('data', (chunk) => {
+          buffer += chunk.toString()
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            const trimmedLine = line.trim()
+            if (trimmedLine.startsWith('data: ')) {
+              const jsonStr = trimmedLine.replace(/^data:\s*/, '')
+              if (jsonStr === '[DONE]') continue
+
+              try {
+                const parsed = JSON.parse(jsonStr)
+                const choices = parsed.choices
+                if (choices && choices.length > 0) {
+                  const delta = choices[0].delta
+                  // Kirim teks balasan jika jenis phasenya adalah 'answer'
+                  if (delta && delta.phase === 'answer' && delta.content) {
+                    controller.enqueue(encoder.encode(delta.content))
+                  }
+                }
+              } catch {
+                // Ignore parse JSON errors for incomplete chunks
+              }
+            }
+          }
+        })
+
+        qwenResponse.data.on('end', () => {
+          controller.close()
+        })
+
+        qwenResponse.data.on('error', (err) => {
+          controller.error(err)
+        })
+      },
+    })
+
+    return new Response(stream, {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  } catch (error) {
+    console.error('Scrape error:', error?.message)
+    return Response.json(
+      { error: error?.message || 'Terjadi kesalahan pada server.' },
+      { status: 500 }
+    )
+  }
 }
