@@ -1,8 +1,7 @@
 'use client'
 import { useEffect, useRef, useState, useCallback } from 'react'
-import InkSeal from './InkSeal'
 
-const STORAGE_KEY = 'sajin_sessions_v2'
+const STORAGE_KEY = 'sajin_sessions_v3'
 
 function uid() {
   return crypto.randomUUID().slice(0, 8)
@@ -62,6 +61,36 @@ function MessageContent({ content }) {
   )
 }
 
+function ChevronIcon({ open }) {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s ease' }}
+    >
+      <path d="M9 18l6-6-6-6" />
+    </svg>
+  )
+}
+
+function ThinkingPanel({ thinking, done, collapsed, onToggle }) {
+  if (!thinking) return null
+  return (
+    <div className="thinking-panel">
+      <button className="thinking-header" onClick={onToggle}>
+        <ChevronIcon open={!collapsed} />
+        <span>{done ? 'Berpikir selesai' : 'Sedang berpikir...'}</span>
+        {!done && <span className="thinking-dot" />}
+      </button>
+      {!collapsed && <div className="thinking-body">{thinking}</div>}
+    </div>
+  )
+}
+
 function defaultSession() {
   return {
     id: uid(),
@@ -103,7 +132,7 @@ export default function ChatConsole() {
   const [status, setStatus] = useState('idle') // idle | busy | error
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showJump, setShowJump] = useState(false)
-  const [pendingImage, setPendingImage] = useState(null) // { dataUrl, mimeType, base64 }
+  const [pendingImage, setPendingImage] = useState(null)
 
   const abortRef = useRef(null)
   const messagesEndRef = useRef(null)
@@ -112,7 +141,7 @@ export default function ChatConsole() {
   const fileInputRef = useRef(null)
 
   useEffect(() => {
-    const t = setTimeout(() => setBooted(true), 1600)
+    const t = setTimeout(() => setBooted(true), 1000)
     return () => clearTimeout(t)
   }, [])
 
@@ -184,6 +213,12 @@ export default function ChatConsole() {
     e.target.value = ''
   }
 
+  function toggleThinking(sessionId, msgId) {
+    updateSessionMessages(sessionId, (msgs) =>
+      msgs.map((m) => (m.id === msgId ? { ...m, thinkingCollapsed: !m.thinkingCollapsed } : m))
+    )
+  }
+
   async function sendMessage(overrideText, overrideImage) {
     const text = (overrideText ?? input).trim()
     const image = overrideImage !== undefined ? overrideImage : pendingImage
@@ -214,7 +249,16 @@ export default function ChatConsole() {
     const assistantId = uid()
     updateSessionMessages(sessionId, (msgs) => [
       ...msgs,
-      { id: assistantId, role: 'assistant', content: '', ts: Date.now(), streaming: true },
+      {
+        id: assistantId,
+        role: 'assistant',
+        content: '',
+        thinking: '',
+        thinkingCollapsed: false,
+        thinkingDone: false,
+        ts: Date.now(),
+        streaming: true,
+      },
     ])
 
     const controller = new AbortController()
@@ -246,13 +290,41 @@ export default function ChatConsole() {
       if (res.body && res.body.getReader) {
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
-        let acc = ''
+        let buffer = ''
+        let accThinking = ''
+        let accAnswer = ''
+        let sawAnswer = false
+
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-          acc += decoder.decode(value, { stream: true })
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const evt = JSON.parse(line)
+              if (evt.type === 'thought') {
+                accThinking += evt.text
+              } else if (evt.type === 'answer') {
+                if (!sawAnswer) sawAnswer = true
+                accAnswer += evt.text
+              }
+            } catch {}
+          }
           updateSessionMessages(sessionId, (msgs) =>
-            msgs.map((m) => (m.id === assistantId ? { ...m, content: acc } : m))
+            msgs.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    thinking: accThinking,
+                    content: accAnswer,
+                    thinkingDone: sawAnswer,
+                    thinkingCollapsed: sawAnswer,
+                  }
+                : m
+            )
           )
         }
       } else {
@@ -269,6 +341,8 @@ export default function ChatConsole() {
                 ...m,
                 content: m.content || '(Sajin tidak memberikan balasan. Periksa log server.)',
                 streaming: false,
+                thinkingDone: true,
+                thinkingCollapsed: true,
               }
             : m
         )
@@ -339,15 +413,13 @@ export default function ChatConsole() {
   }
 
   if (!activeSession) return null
+  const canSend = !!(input.trim() || pendingImage)
 
   return (
     <div>
       {!booted && (
         <div className="boot-screen">
-          <svg viewBox="0 0 220 40">
-            <path d="M10 30 Q 60 5, 110 22 T 210 15" />
-          </svg>
-          <div className="boot-label">SAJIN</div>
+          <div className="boot-orb" />
         </div>
       )}
 
@@ -357,9 +429,7 @@ export default function ChatConsole() {
       </div>
 
       <div className="app-shell">
-        {sidebarOpen && (
-          <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />
-        )}
+        {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
         <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
           <div className="sidebar-header">
             <div className="brand-mark">
@@ -395,34 +465,56 @@ export default function ChatConsole() {
             <button className="menu-btn" onClick={() => setSidebarOpen(true)}>
               ☰
             </button>
-            <div className="status-line">
-              <span className={`status-dot ${status === 'busy' ? 'busy' : ''}`} />
-              {status === 'busy' ? 'Sajin sedang menjawab...' : status === 'error' ? 'Terjadi kendala' : 'Siap'}
-            </div>
-            <div className="header-seal">
-              <InkSeal active={status === 'busy'} size={32} />
+            <div className="avatar-orb" />
+            <div className="header-text">
+              <div className="header-name">Sajin</div>
+              <div className="status-line">
+                <span className={`status-dot ${status === 'busy' ? 'busy' : ''}`} />
+                {status === 'busy' ? 'sedang menjawab...' : status === 'error' ? 'terjadi kendala' : 'siap'}
+              </div>
             </div>
           </div>
 
           <div className="messages" ref={messagesRef} onScroll={handleScroll}>
             {activeSession.messages.map((m) => (
               <div key={m.id} className={`msg ${m.role}`}>
-                <div className="msg-meta">
-                  <span className="role-label">{m.role === 'user' ? 'Anda' : 'Sajin'}</span>
-                  <span>{formatTime(m.ts)}</span>
-                </div>
-                <div className="msg-bubble">
-                  {m.image?.previewUrl && (
-                    <img className="msg-image" src={m.image.previewUrl} alt="lampiran" />
-                  )}
-                  <MessageContent content={m.content || (m.streaming ? '' : '')} />
-                  {m.streaming && <span className="cursor-blink" />}
-                </div>
-                {m.role === 'assistant' && !m.streaming && m.content && (
-                  <div className="msg-actions">
-                    <button onClick={() => copyMsg(m.content)}>Salin</button>
-                    {m === activeSession.messages[activeSession.messages.length - 1] && (
-                      <button onClick={regenerate}>Ulangi</button>
+                {m.role === 'user' ? (
+                  <div className="msg-bubble user-bubble">
+                    {m.image?.previewUrl && <img className="msg-image" src={m.image.previewUrl} alt="lampiran" />}
+                    <MessageContent content={m.content} />
+                  </div>
+                ) : (
+                  <div className="assistant-block">
+                    <ThinkingPanel
+                      thinking={m.thinking}
+                      done={m.thinkingDone}
+                      collapsed={m.thinkingCollapsed}
+                      onToggle={() => toggleThinking(activeSession.id, m.id)}
+                    />
+                    {(m.content || m.streaming) && (
+                      <div className="assistant-content">
+                        <MessageContent content={m.content} />
+                        {m.streaming && !m.content && <span className="typing-dots"><span/><span/><span/></span>}
+                        {m.streaming && m.content && <span className="cursor-blink" />}
+                      </div>
+                    )}
+                    {!m.streaming && m.content && (
+                      <div className="msg-actions">
+                        <button className="icon-btn" onClick={() => copyMsg(m.content)} title="Salin">
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" />
+                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                          </svg>
+                        </button>
+                        {m === activeSession.messages[activeSession.messages.length - 1] && (
+                          <button className="icon-btn" onClick={regenerate} title="Ulangi">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M23 4v6h-6M1 20v-6h6" />
+                              <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
@@ -458,7 +550,7 @@ export default function ChatConsole() {
             />
             <button className="attach-btn" onClick={() => fileInputRef.current?.click()} title="Lampirkan gambar">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                <path d="M12 5v14M5 12h14" />
               </svg>
             </button>
             <textarea
@@ -474,16 +566,21 @@ export default function ChatConsole() {
               rows={1}
             />
             {status === 'busy' ? (
-              <button className="stop-btn" onClick={stopGeneration}>
-                Hentikan
+              <button className="round-btn stop-round" onClick={stopGeneration} title="Hentikan">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="5" y="5" width="14" height="14" rx="2" />
+                </svg>
               </button>
             ) : (
               <button
-                className="send-btn"
+                className={`round-btn send-round ${canSend ? 'ready' : ''}`}
                 onClick={() => sendMessage()}
-                disabled={!input.trim() && !pendingImage}
+                disabled={!canSend}
+                title="Kirim"
               >
-                Kirim
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M12 19V5M5 12l7-7 7 7" />
+                </svg>
               </button>
             )}
           </div>
