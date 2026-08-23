@@ -1,7 +1,25 @@
 'use client'
 import { useEffect, useRef, useState, useCallback } from 'react'
 
-const STORAGE_KEY = 'sajin_sessions_v3'
+const STORAGE_KEY = 'sajin_sessions_v4'
+
+const MODELS = [
+  { id: 'gemini-flash-latest', name: 'Gemini Flash', desc: 'Cepat, seimbang, gratis' },
+  { id: 'gemini-flash-lite-latest', name: 'Gemini Flash Lite', desc: 'Lebih ringan, kuota lebih longgar' },
+  { id: 'gemini-2.5-pro', name: 'Gemini Pro', desc: 'Paling pintar — butuh billing aktif' },
+]
+
+const REASONING_LEVELS = [
+  { id: 'standard', name: 'Standar', desc: 'Jawab cepat, mikir sebentar' },
+  { id: 'high', name: 'Tinggi', desc: 'Mikir lebih dalam, lebih lambat' },
+]
+
+const SUGGESTIONS = [
+  'Jelaskan cara kerja rekursi dalam pemrograman',
+  'Analisis gambar yang aku lampirkan',
+  'Ceritakan tentang Gotei 13',
+  'Bantu aku debug kode yang error',
+]
 
 function uid() {
   return crypto.randomUUID().slice(0, 8)
@@ -61,7 +79,8 @@ function MessageContent({ content }) {
   )
 }
 
-function ChevronIcon({ open }) {
+function ChevronIcon({ open, rotate }) {
+  const deg = rotate != null ? rotate : open ? 90 : 0
   return (
     <svg
       width="13"
@@ -70,7 +89,7 @@ function ChevronIcon({ open }) {
       fill="none"
       stroke="currentColor"
       strokeWidth="2.5"
-      style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s ease' }}
+      style={{ transform: `rotate(${deg}deg)`, transition: 'transform 0.2s ease' }}
     >
       <path d="M9 18l6-6-6-6" />
     </svg>
@@ -96,14 +115,7 @@ function defaultSession() {
     id: uid(),
     name: 'Percakapan baru',
     createdAt: Date.now(),
-    messages: [
-      {
-        id: uid(),
-        role: 'assistant',
-        content: 'Aku Sajin. Katakan apa yang ingin kau bicarakan, kawan.',
-        ts: Date.now(),
-      },
-    ],
+    messages: [],
   }
 }
 
@@ -129,16 +141,23 @@ export default function ChatConsole() {
   const [sessions, setSessions] = useState([])
   const [activeId, setActiveId] = useState(null)
   const [input, setInput] = useState('')
-  const [status, setStatus] = useState('idle') // idle | busy | error
+  const [status, setStatus] = useState('idle')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showJump, setShowJump] = useState(false)
   const [pendingImage, setPendingImage] = useState(null)
+  const [attachSheetOpen, setAttachSheetOpen] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [reasoningExpanded, setReasoningExpanded] = useState(false)
+  const [model, setModel] = useState('gemini-flash-latest')
+  const [reasoningLevel, setReasoningLevel] = useState('standard')
+  const [webSearch, setWebSearch] = useState(false)
 
   const abortRef = useRef(null)
   const messagesEndRef = useRef(null)
   const messagesRef = useRef(null)
   const textareaRef = useRef(null)
   const fileInputRef = useRef(null)
+  const cameraInputRef = useRef(null)
 
   useEffect(() => {
     const t = setTimeout(() => setBooted(true), 1000)
@@ -153,6 +172,8 @@ export default function ChatConsole() {
     if (saved && saved.sessions?.length) {
       setSessions(saved.sessions)
       setActiveId(saved.activeId ?? saved.sessions[0].id)
+      if (saved.model) setModel(saved.model)
+      if (saved.reasoningLevel) setReasoningLevel(saved.reasoningLevel)
     } else {
       const s = defaultSession()
       setSessions([s])
@@ -162,8 +183,8 @@ export default function ChatConsole() {
 
   useEffect(() => {
     if (!sessions.length) return
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions, activeId }))
-  }, [sessions, activeId])
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions, activeId, model, reasoningLevel }))
+  }, [sessions, activeId, model, reasoningLevel])
 
   const activeSession = sessions.find((s) => s.id === activeId)
 
@@ -211,6 +232,7 @@ export default function ChatConsole() {
       setPendingImage({ dataUrl, mimeType: file.type, base64 })
     } catch {}
     e.target.value = ''
+    setAttachSheetOpen(false)
   }
 
   function toggleThinking(sessionId, msgId) {
@@ -234,11 +256,9 @@ export default function ChatConsole() {
     const sessionId = activeSession.id
 
     updateSessionMessages(sessionId, (msgs) => [...msgs, userMsg])
-    if (activeSession.messages.length <= 1) {
+    if (activeSession.messages.length === 0) {
       setSessions((prev) =>
-        prev.map((s) =>
-          s.id === sessionId ? { ...s, name: (text || 'Gambar').slice(0, 32) } : s
-        )
+        prev.map((s) => (s.id === sessionId ? { ...s, name: (text || 'Gambar').slice(0, 32) } : s))
       )
     }
     setInput('')
@@ -274,7 +294,7 @@ export default function ChatConsole() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({ messages: history, model, reasoningLevel, webSearch }),
         signal: controller.signal,
       })
 
@@ -414,6 +434,8 @@ export default function ChatConsole() {
 
   if (!activeSession) return null
   const canSend = !!(input.trim() || pendingImage)
+  const isEmpty = activeSession.messages.length === 0
+  const currentModel = MODELS.find((m) => m.id === model) || MODELS[0]
 
   return (
     <div>
@@ -465,63 +487,153 @@ export default function ChatConsole() {
             <button className="menu-btn" onClick={() => setSidebarOpen(true)}>
               ☰
             </button>
-            <div className="avatar-orb" />
-            <div className="header-text">
-              <div className="header-name">Sajin</div>
-              <div className="status-line">
-                <span className={`status-dot ${status === 'busy' ? 'busy' : ''}`} />
-                {status === 'busy' ? 'sedang menjawab...' : status === 'error' ? 'terjadi kendala' : 'siap'}
+            <button className="header-picker-trigger" onClick={() => setPickerOpen((v) => !v)}>
+              <div className="avatar-orb" />
+              <div className="header-text">
+                <div className="header-name">
+                  Sajin <ChevronIcon open={pickerOpen} />
+                </div>
+                <div className="status-line">
+                  <span className={`status-dot ${status === 'busy' ? 'busy' : ''}`} />
+                  {status === 'busy' ? 'sedang menjawab...' : currentModel.name}
+                </div>
               </div>
-            </div>
+            </button>
           </div>
 
-          <div className="messages" ref={messagesRef} onScroll={handleScroll}>
-            {activeSession.messages.map((m) => (
-              <div key={m.id} className={`msg ${m.role}`}>
-                {m.role === 'user' ? (
-                  <div className="msg-bubble user-bubble">
-                    {m.image?.previewUrl && <img className="msg-image" src={m.image.previewUrl} alt="lampiran" />}
-                    <MessageContent content={m.content} />
-                  </div>
+          {pickerOpen && (
+            <>
+              <div
+                className="sheet-backdrop"
+                onClick={() => {
+                  setPickerOpen(false)
+                  setReasoningExpanded(false)
+                }}
+              />
+              <div className="model-picker">
+                <div className="picker-section-label">Model</div>
+                {MODELS.map((m) => (
+                  <button
+                    key={m.id}
+                    className={`picker-item ${model === m.id ? 'active' : ''}`}
+                    onClick={() => {
+                      setModel(m.id)
+                      setPickerOpen(false)
+                    }}
+                  >
+                    <div>
+                      <div className="picker-item-name">{m.name}</div>
+                      <div className="picker-item-desc">{m.desc}</div>
+                    </div>
+                    {model === m.id && <span className="picker-check">✓</span>}
+                  </button>
+                ))}
+                <div className="picker-divider" />
+                {!reasoningExpanded ? (
+                  <button className="picker-item" onClick={() => setReasoningExpanded(true)}>
+                    <div>
+                      <div className="picker-item-name">Tingkat Penalaran</div>
+                      <div className="picker-item-desc">
+                        {REASONING_LEVELS.find((r) => r.id === reasoningLevel)?.name}
+                      </div>
+                    </div>
+                    <ChevronIcon open={false} />
+                  </button>
                 ) : (
-                  <div className="assistant-block">
-                    <ThinkingPanel
-                      thinking={m.thinking}
-                      done={m.thinkingDone}
-                      collapsed={m.thinkingCollapsed}
-                      onToggle={() => toggleThinking(activeSession.id, m.id)}
-                    />
-                    {(m.content || m.streaming) && (
-                      <div className="assistant-content">
-                        <MessageContent content={m.content} />
-                        {m.streaming && !m.content && <span className="typing-dots"><span/><span/><span/></span>}
-                        {m.streaming && m.content && <span className="cursor-blink" />}
-                      </div>
-                    )}
-                    {!m.streaming && m.content && (
-                      <div className="msg-actions">
-                        <button className="icon-btn" onClick={() => copyMsg(m.content)} title="Salin">
-                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <rect x="9" y="9" width="13" height="13" rx="2" />
-                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-                          </svg>
-                        </button>
-                        {m === activeSession.messages[activeSession.messages.length - 1] && (
-                          <button className="icon-btn" onClick={regenerate} title="Ulangi">
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M23 4v6h-6M1 20v-6h6" />
-                              <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
-                            </svg>
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
+                  <>
+                    <button className="picker-item picker-back" onClick={() => setReasoningExpanded(false)}>
+                      <ChevronIcon rotate={180} />
+                      <div className="picker-item-name">Tingkat Penalaran</div>
+                    </button>
+                    {REASONING_LEVELS.map((r) => (
+                      <button
+                        key={r.id}
+                        className={`picker-item ${reasoningLevel === r.id ? 'active' : ''}`}
+                        onClick={() => {
+                          setReasoningLevel(r.id)
+                          setReasoningExpanded(false)
+                        }}
+                      >
+                        <div>
+                          <div className="picker-item-name">{r.name}</div>
+                          <div className="picker-item-desc">{r.desc}</div>
+                        </div>
+                        {reasoningLevel === r.id && <span className="picker-check">✓</span>}
+                      </button>
+                    ))}
+                  </>
                 )}
               </div>
-            ))}
-            <div ref={messagesEndRef} />
-          </div>
+            </>
+          )}
+
+          {isEmpty ? (
+            <div className="welcome-screen">
+              <div className="welcome-orb" />
+              <div className="welcome-text">Apa yang ingin kau bicarakan, kawan?</div>
+              <div className="suggestion-grid">
+                {SUGGESTIONS.map((s, i) => (
+                  <button key={i} className="suggestion-chip" onClick={() => sendMessage(s)}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="messages" ref={messagesRef} onScroll={handleScroll}>
+              {activeSession.messages.map((m) => (
+                <div key={m.id} className={`msg ${m.role}`}>
+                  {m.role === 'user' ? (
+                    <div className="msg-bubble user-bubble">
+                      {m.image?.previewUrl && <img className="msg-image" src={m.image.previewUrl} alt="lampiran" />}
+                      <MessageContent content={m.content} />
+                    </div>
+                  ) : (
+                    <div className="assistant-block">
+                      <ThinkingPanel
+                        thinking={m.thinking}
+                        done={m.thinkingDone}
+                        collapsed={m.thinkingCollapsed}
+                        onToggle={() => toggleThinking(activeSession.id, m.id)}
+                      />
+                      {(m.content || m.streaming) && (
+                        <div className="assistant-content">
+                          <MessageContent content={m.content} />
+                          {m.streaming && !m.content && (
+                            <span className="typing-dots">
+                              <span />
+                              <span />
+                              <span />
+                            </span>
+                          )}
+                          {m.streaming && m.content && <span className="cursor-blink" />}
+                        </div>
+                      )}
+                      {!m.streaming && m.content && (
+                        <div className="msg-actions">
+                          <button className="icon-btn" onClick={() => copyMsg(m.content)} title="Salin">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <rect x="9" y="9" width="13" height="13" rx="2" />
+                              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                            </svg>
+                          </button>
+                          {m === activeSession.messages[activeSession.messages.length - 1] && (
+                            <button className="icon-btn" onClick={regenerate} title="Ulangi">
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M23 4v6h-6M1 20v-6h6" />
+                                <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+          )}
 
           {showJump && (
             <button className="jump-latest" onClick={() => scrollToBottom()}>
@@ -540,6 +652,15 @@ export default function ChatConsole() {
             </div>
           )}
 
+          {webSearch && (
+            <div className="active-tools-bar">
+              <span className="tool-pill">
+                🔎 Pencarian web aktif
+                <button onClick={() => setWebSearch(false)}>✕</button>
+              </span>
+            </div>
+          )}
+
           <div className="composer">
             <input
               ref={fileInputRef}
@@ -548,7 +669,15 @@ export default function ChatConsole() {
               style={{ display: 'none' }}
               onChange={handleFileSelect}
             />
-            <button className="attach-btn" onClick={() => fileInputRef.current?.click()} title="Lampirkan gambar">
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{ display: 'none' }}
+              onChange={handleFileSelect}
+            />
+            <button className="attach-btn" onClick={() => setAttachSheetOpen(true)} title="Lampirkan">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M12 5v14M5 12h14" />
               </svg>
@@ -586,6 +715,58 @@ export default function ChatConsole() {
           </div>
         </div>
       </div>
+
+      {attachSheetOpen && (
+        <>
+          <div className="sheet-backdrop" onClick={() => setAttachSheetOpen(false)} />
+          <div className="attach-sheet">
+            <div className="sheet-handle" />
+            <div className="sheet-grid">
+              <button className="sheet-item" onClick={() => cameraInputRef.current?.click()}>
+                <div className="sheet-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
+                    <circle cx="12" cy="13" r="4" />
+                  </svg>
+                </div>
+                <span>Kamera</span>
+              </button>
+              <button className="sheet-item" onClick={() => fileInputRef.current?.click()}>
+                <div className="sheet-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                    <circle cx="8.5" cy="8.5" r="1.5" />
+                    <path d="M21 15l-5-5L5 21" />
+                  </svg>
+                </div>
+                <span>Foto</span>
+              </button>
+            </div>
+            <div className="sheet-divider" />
+            <button
+              className="sheet-row"
+              onClick={() => {
+                setWebSearch((v) => !v)
+                setAttachSheetOpen(false)
+              }}
+            >
+              <div className="sheet-row-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M2 12h20M12 2a15 15 0 010 20 15 15 0 010-20z" />
+                </svg>
+              </div>
+              <div className="sheet-row-text">
+                <div>Pencarian web</div>
+                <div className="sheet-row-sub">{webSearch ? 'Aktif' : 'Nonaktif'}</div>
+              </div>
+              <div className={`sheet-switch ${webSearch ? 'on' : ''}`}>
+                <div className="sheet-switch-knob" />
+              </div>
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
