@@ -1,8 +1,8 @@
 'use client'
 import { useEffect, useRef, useState, useCallback } from 'react'
-import Waveform from './Waveform'
+import InkSeal from './InkSeal'
 
-const STORAGE_KEY = 'uplink_sessions_v1'
+const STORAGE_KEY = 'sajin_sessions_v2'
 
 function uid() {
   return crypto.randomUUID().slice(0, 8)
@@ -33,7 +33,7 @@ function CodeBlock({ code }) {
           setTimeout(() => setCopied(false), 1200)
         }}
       >
-        {copied ? 'COPIED' : 'COPY'}
+        {copied ? 'TERSALIN' : 'SALIN'}
       </button>
       <pre>
         <code>{code}</code>
@@ -65,18 +65,34 @@ function MessageContent({ content }) {
 function defaultSession() {
   return {
     id: uid(),
-    name: 'Sesi baru',
+    name: 'Percakapan baru',
     createdAt: Date.now(),
     messages: [
       {
         id: uid(),
         role: 'assistant',
-        content: 'Uplink terpasang. Sajin siap nerima transmisi — ketik pesan lu buat mulai.',
+        content: 'Aku Sajin. Katakan apa yang ingin kau bicarakan, kawan.',
         ts: Date.now(),
-        latencyMs: 0,
       },
     ],
   }
+}
+
+function formatTime(ts) {
+  return new Date(ts).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result
+      const base64 = result.split(',')[1]
+      resolve({ dataUrl: result, base64 })
+    }
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
 }
 
 export default function ChatConsole() {
@@ -85,17 +101,18 @@ export default function ChatConsole() {
   const [activeId, setActiveId] = useState(null)
   const [input, setInput] = useState('')
   const [status, setStatus] = useState('idle') // idle | busy | error
-  const [channel, setChannel] = useState('amber')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showJump, setShowJump] = useState(false)
+  const [pendingImage, setPendingImage] = useState(null) // { dataUrl, mimeType, base64 }
 
   const abortRef = useRef(null)
   const messagesEndRef = useRef(null)
   const messagesRef = useRef(null)
   const textareaRef = useRef(null)
+  const fileInputRef = useRef(null)
 
   useEffect(() => {
-    const t = setTimeout(() => setBooted(true), 1500)
+    const t = setTimeout(() => setBooted(true), 1600)
     return () => clearTimeout(t)
   }, [])
 
@@ -156,37 +173,58 @@ export default function ChatConsole() {
     })
   }
 
-  async function sendMessage(overrideText) {
-    const text = (overrideText ?? input).trim()
-    if (!text || status === 'busy' || !activeSession) return
+  async function handleFileSelect(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith('image/')) return
+    try {
+      const { dataUrl, base64 } = await fileToBase64(file)
+      setPendingImage({ dataUrl, mimeType: file.type, base64 })
+    } catch {}
+    e.target.value = ''
+  }
 
-    const userMsg = { id: uid(), role: 'user', content: text, ts: Date.now() }
+  async function sendMessage(overrideText, overrideImage) {
+    const text = (overrideText ?? input).trim()
+    const image = overrideImage !== undefined ? overrideImage : pendingImage
+    if ((!text && !image) || status === 'busy' || !activeSession) return
+
+    const userMsg = {
+      id: uid(),
+      role: 'user',
+      content: text,
+      ts: Date.now(),
+      image: image ? { mimeType: image.mimeType, data: image.base64, previewUrl: image.dataUrl } : null,
+    }
     const sessionId = activeSession.id
 
     updateSessionMessages(sessionId, (msgs) => [...msgs, userMsg])
-    if (sessions.length && activeSession.messages.length <= 1) {
+    if (activeSession.messages.length <= 1) {
       setSessions((prev) =>
-        prev.map((s) => (s.id === sessionId ? { ...s, name: text.slice(0, 32) } : s))
+        prev.map((s) =>
+          s.id === sessionId ? { ...s, name: (text || 'Gambar').slice(0, 32) } : s
+        )
       )
     }
     setInput('')
+    setPendingImage(null)
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     setStatus('busy')
 
     const assistantId = uid()
     updateSessionMessages(sessionId, (msgs) => [
       ...msgs,
-      { id: assistantId, role: 'assistant', content: '', ts: Date.now(), latencyMs: null, streaming: true },
+      { id: assistantId, role: 'assistant', content: '', ts: Date.now(), streaming: true },
     ])
 
     const controller = new AbortController()
     abortRef.current = controller
-    const startTime = Date.now()
 
     try {
-      const history = [...activeSession.messages, userMsg].map(({ role, content }) => ({
+      const history = [...activeSession.messages, userMsg].map(({ role, content, image }) => ({
         role,
         content,
+        image: image ? { mimeType: image.mimeType, data: image.data } : undefined,
       }))
 
       const res = await fetch('/api/chat', {
@@ -196,10 +234,14 @@ export default function ChatConsole() {
         signal: controller.signal,
       })
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-
-      let firstChunk = true
-      let latency = 0
+      if (!res.ok) {
+        let errMsg = `HTTP ${res.status}`
+        try {
+          const errData = await res.json()
+          if (errData?.error) errMsg = errData.error
+        } catch {}
+        throw new Error(errMsg)
+      }
 
       if (res.body && res.body.getReader) {
         const reader = res.body.getReader()
@@ -208,27 +250,28 @@ export default function ChatConsole() {
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-          if (firstChunk) {
-            latency = Date.now() - startTime
-            firstChunk = false
-          }
           acc += decoder.decode(value, { stream: true })
           updateSessionMessages(sessionId, (msgs) =>
-            msgs.map((m) => (m.id === assistantId ? { ...m, content: acc, latencyMs: latency } : m))
+            msgs.map((m) => (m.id === assistantId ? { ...m, content: acc } : m))
           )
         }
       } else {
         const data = await res.json()
-        latency = Date.now() - startTime
         updateSessionMessages(sessionId, (msgs) =>
-          msgs.map((m) =>
-            m.id === assistantId ? { ...m, content: data.content ?? '(kosong)', latencyMs: latency } : m
-          )
+          msgs.map((m) => (m.id === assistantId ? { ...m, content: data.content ?? '' } : m))
         )
       }
 
       updateSessionMessages(sessionId, (msgs) =>
-        msgs.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m))
+        msgs.map((m) =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: m.content || '(Sajin tidak memberikan balasan. Periksa log server.)',
+                streaming: false,
+              }
+            : m
+        )
       )
       setStatus('idle')
     } catch (err) {
@@ -236,7 +279,7 @@ export default function ChatConsole() {
         updateSessionMessages(sessionId, (msgs) =>
           msgs.map((m) =>
             m.id === assistantId
-              ? { ...m, content: m.content + '\n\n[transmisi dihentikan]', streaming: false }
+              ? { ...m, content: m.content + '\n\n[dihentikan]', streaming: false }
               : m
           )
         )
@@ -245,7 +288,7 @@ export default function ChatConsole() {
         updateSessionMessages(sessionId, (msgs) =>
           msgs.map((m) =>
             m.id === assistantId
-              ? { ...m, content: `[ERROR] Uplink gagal: ${err.message}`, streaming: false }
+              ? { ...m, content: `Terjadi kendala: ${err.message}`, streaming: false }
               : m
           )
         )
@@ -271,7 +314,10 @@ export default function ChatConsole() {
       const idx = m.map((x) => x.id).lastIndexOf(lastUser.id)
       return m.slice(0, idx + 1)
     })
-    sendMessage(lastUser.content)
+    const img = lastUser.image
+      ? { mimeType: lastUser.image.mimeType, base64: lastUser.image.data, dataUrl: lastUser.image.previewUrl }
+      : null
+    sendMessage(lastUser.content, img)
   }
 
   function copyMsg(content) {
@@ -295,15 +341,20 @@ export default function ChatConsole() {
   if (!activeSession) return null
 
   return (
-    <div data-channel={channel}>
+    <div>
       {!booted && (
         <div className="boot-screen">
-          <div className="boot-line">&gt; ESTABLISHING UPLINK...</div>
-          <div className="boot-line">&gt; HANDSHAKE OK</div>
-          <div className="boot-line">&gt; CHANNEL: {channel.toUpperCase()}</div>
+          <svg viewBox="0 0 220 40">
+            <path d="M10 30 Q 60 5, 110 22 T 210 15" />
+          </svg>
+          <div className="boot-label">SAJIN</div>
         </div>
       )}
-      <div className="scanlines" />
+
+      <div className="ink-wash">
+        <div className="ink-blob a" />
+        <div className="ink-blob b" />
+      </div>
 
       <div className="app-shell">
         {sidebarOpen && (
@@ -311,11 +362,14 @@ export default function ChatConsole() {
         )}
         <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
           <div className="sidebar-header">
-            <div className="brand-name">SAJIN</div>
-            <div className="brand-sub">SESSION LOG</div>
+            <div className="brand-mark">
+              <span className="brand-seal">7</span>
+              <span className="brand-name">Sajin</span>
+            </div>
+            <div className="brand-sub">Riwayat Percakapan</div>
           </div>
           <button className="new-session-btn" onClick={newSession}>
-            + SESI BARU
+            + PERCAKAPAN BARU
           </button>
           <div style={{ overflowY: 'auto', flex: 1 }}>
             {sessions.map((s) => (
@@ -342,50 +396,33 @@ export default function ChatConsole() {
               ☰
             </button>
             <div className="status-line">
-              <span
-                className={`signal-dot ${
-                  status === 'busy' ? 'busy' : status === 'error' ? 'error' : 'online'
-                }`}
-              />
-              {status === 'busy' ? 'RECEIVING...' : status === 'error' ? 'LINK ERROR' : 'ONLINE'}
+              <span className={`status-dot ${status === 'busy' ? 'busy' : ''}`} />
+              {status === 'busy' ? 'Sajin sedang menjawab...' : status === 'error' ? 'Terjadi kendala' : 'Siap'}
             </div>
-            <div className="channel-toggle">
-              <button
-                className={channel === 'amber' ? 'active' : ''}
-                onClick={() => setChannel('amber')}
-              >
-                AMBER
-              </button>
-              <button
-                className={channel === 'cyan' ? 'active' : ''}
-                onClick={() => setChannel('cyan')}
-              >
-                CYAN
-              </button>
+            <div className="header-seal">
+              <InkSeal active={status === 'busy'} size={32} />
             </div>
-          </div>
-
-          <div className="waveform-panel">
-            <Waveform active={status === 'busy'} color={channel === 'amber' ? '#FFB454' : '#5EEAD4'} />
           </div>
 
           <div className="messages" ref={messagesRef} onScroll={handleScroll}>
             {activeSession.messages.map((m) => (
               <div key={m.id} className={`msg ${m.role}`}>
                 <div className="msg-meta">
-                  <span>{m.role === 'user' ? 'YOU · UPLINK' : 'SAJIN · DOWNLINK'}</span>
-                  <span>#{m.id}</span>
-                  {m.latencyMs != null && <span>{m.latencyMs}ms</span>}
+                  <span className="role-label">{m.role === 'user' ? 'Anda' : 'Sajin'}</span>
+                  <span>{formatTime(m.ts)}</span>
                 </div>
                 <div className="msg-bubble">
-                  <MessageContent content={m.content || (m.streaming ? '...' : '')} />
+                  {m.image?.previewUrl && (
+                    <img className="msg-image" src={m.image.previewUrl} alt="lampiran" />
+                  )}
+                  <MessageContent content={m.content || (m.streaming ? '' : '')} />
                   {m.streaming && <span className="cursor-blink" />}
                 </div>
                 {m.role === 'assistant' && !m.streaming && m.content && (
                   <div className="msg-actions">
-                    <button onClick={() => copyMsg(m.content)}>COPY</button>
+                    <button onClick={() => copyMsg(m.content)}>Salin</button>
                     {m === activeSession.messages[activeSession.messages.length - 1] && (
-                      <button onClick={regenerate}>REGENERATE</button>
+                      <button onClick={regenerate}>Ulangi</button>
                     )}
                   </div>
                 )}
@@ -400,12 +437,34 @@ export default function ChatConsole() {
             </button>
           )}
 
+          {pendingImage && (
+            <div className="image-preview-bar">
+              <div className="image-preview-item">
+                <img src={pendingImage.dataUrl} alt="preview" />
+                <button className="image-preview-remove" onClick={() => setPendingImage(null)}>
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="composer">
-            <span className="composer-prompt">&gt;</span>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={handleFileSelect}
+            />
+            <button className="attach-btn" onClick={() => fileInputRef.current?.click()} title="Lampirkan gambar">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
             <textarea
               ref={textareaRef}
               value={input}
-              placeholder="Ketik transmisi lu..."
+              placeholder="Sampaikan sesuatu kepada Sajin..."
               onChange={(e) => {
                 setInput(e.target.value)
                 e.target.style.height = 'auto'
@@ -416,11 +475,15 @@ export default function ChatConsole() {
             />
             {status === 'busy' ? (
               <button className="stop-btn" onClick={stopGeneration}>
-                STOP
+                Hentikan
               </button>
             ) : (
-              <button className="send-btn" onClick={() => sendMessage()} disabled={!input.trim()}>
-                SEND
+              <button
+                className="send-btn"
+                onClick={() => sendMessage()}
+                disabled={!input.trim() && !pendingImage}
+              >
+                Kirim
               </button>
             )}
           </div>
