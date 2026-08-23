@@ -11,13 +11,14 @@ AI console bertema tinta & segel, persona Sajin Komamura (Bleach), pakai Gemini 
 
 ## Fitur
 - Persona Sajin Komamura (system prompt di `app/api/chat/route.js`)
-- Vision — bisa lampirkan gambar lewat tombol klip di composer
+- Panel "Sedang berpikir..." / "Berpikir selesai" — asli dari Gemini thinking mode, bukan animasi bohongan
+- Vision — bisa lampirkan gambar lewat tombol + di composer
 - Streaming response + tombol Hentikan
 - Ulangi (regenerate) jawaban terakhir
 - Salin pesan & salin code block
 - Markdown-lite: **bold**, *italic*, `code`, ```code block```, [link](url)
 - Multi-percakapan tersimpan di localStorage browser
-- Animasi: segel tinta hidup, sapuan kuas saat boot, ambient ink wash di background
+- Tombol kirim yang animasi morph pas mulai ngetik
 
 ## Struktur
 ```
@@ -25,10 +26,9 @@ app/
   layout.js
   page.js
   globals.css
-  api/chat/route.js     <- persona + panggilan Gemini API
+  api/chat/route.js     <- persona + panggilan Gemini API (streaming + thinking)
 components/
-  ChatConsole.js          <- logic utama UI
-  InkSeal.js               <- animasi segel tinta
+  ChatConsole.js          <- semua logic + UI chat
 ```
 
 ## Ganti persona
