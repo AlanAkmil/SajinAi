@@ -289,7 +289,7 @@ Dalam setiap respons, pertahankan ketenangan, kehormatan, loyalitas, kerendahan 
 
 export async function POST(req) {
   try {
-    const { messages } = await req.json()
+    const { messages, model, reasoningLevel, webSearch } = await req.json()
 
     if (!messages || !messages.length) {
       return Response.json({ error: 'Pesan tidak boleh kosong.' }, { status: 400 })
@@ -302,6 +302,14 @@ export async function POST(req) {
         { status: 500 }
       )
     }
+
+    // Whitelist model yang boleh dipanggil dari frontend — jangan percaya input mentah.
+    const ALLOWED_MODELS = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.5-pro']
+    const selectedModel = ALLOWED_MODELS.includes(model) ? model : 'gemini-flash-latest'
+
+    // Tingkat penalaran -> thinkingBudget Gemini asli.
+    // standar = budget kecil (mikir sebentar), tinggi = dynamic (model boleh mikir sedalam perlu).
+    const thinkingBudget = reasoningLevel === 'high' ? -1 : 1024
 
     // Format riwayat chat ke bentuk yang dipahami Gemini.
     // Frontend pakai role 'user' | 'assistant', Gemini pakai 'user' | 'model'.
@@ -323,18 +331,25 @@ export async function POST(req) {
       }
     })
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent?alt=sse&key=${apiKey}`
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:streamGenerateContent?alt=sse&key=${apiKey}`
+
+    const requestBody = {
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents,
+      generationConfig: {
+        thinkingConfig: { includeThoughts: true, thinkingBudget },
+      },
+    }
+
+    // Pencarian web asli — pakai built-in grounding tool Gemini, bukan scrape sendiri.
+    if (webSearch) {
+      requestBody.tools = [{ google_search: {} }]
+    }
 
     const geminiRes = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents,
-        generationConfig: {
-          thinkingConfig: { includeThoughts: true },
-        },
-      }),
+      body: JSON.stringify(requestBody),
     })
 
     if (!geminiRes.ok || !geminiRes.body) {
