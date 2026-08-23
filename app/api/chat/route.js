@@ -331,6 +331,9 @@ export async function POST(req) {
       body: JSON.stringify({
         system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
         contents,
+        generationConfig: {
+          thinkingConfig: { includeThoughts: true },
+        },
       }),
     })
 
@@ -339,6 +342,9 @@ export async function POST(req) {
       return Response.json({ error: `Gemini error [${geminiRes.status}]: ${errText}` }, { status: geminiRes.status })
     }
 
+    // Protokol stream sekarang: tiap baris adalah satu objek JSON
+    // { type: 'thought' | 'answer', text: '...' } dipisah newline.
+    // Ini biar frontend bisa nampilin panel "Berpikir..." terpisah dari jawaban final.
     const encoder = new TextEncoder()
     const decoder = new TextDecoder()
 
@@ -360,8 +366,12 @@ export async function POST(req) {
               if (!jsonStr || jsonStr === '[DONE]') continue
               try {
                 const parsed = JSON.parse(jsonStr)
-                const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text
-                if (text) controller.enqueue(encoder.encode(text))
+                const parts = parsed?.candidates?.[0]?.content?.parts || []
+                for (const part of parts) {
+                  if (!part.text) continue
+                  const type = part.thought ? 'thought' : 'answer'
+                  controller.enqueue(encoder.encode(JSON.stringify({ type, text: part.text }) + '\n'))
+                }
               } catch {
                 // chunk JSON belum lengkap, skip
               }
@@ -375,7 +385,7 @@ export async function POST(req) {
     })
 
     return new Response(stream, {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
     })
   } catch (error) {
     console.error('Gemini route error:', error?.message)
