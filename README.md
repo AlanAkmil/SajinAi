@@ -1,24 +1,23 @@
-# UPLINK — AI Console
+# Sajin
 
-Tema operator sinyal/jaringan. Next.js 14 App Router.
+AI console bertema tinta & segel, persona Sajin Komamura (Bleach), pakai Gemini API resmi.
 
-## Cara pakai
-1. Upload semua folder/file ini ke repo GitHub lu (struktur harus tetap sama).
-2. Deploy ke Vercel seperti biasa (import repo, default settings Next.js udah cukup).
-3. Buka `app/api/chat/route.js` — di situ tempat lu tempel scrape AI model lu.
-   - Kalau scrape lu bisa streaming: balikin `ReadableStream` isi teks biasa (lihat contoh dummy yang sudah ada).
-   - Kalau ga streaming: balikin `Response.json({ content: "..." })`, frontend otomatis fallback.
-4. Format riwayat chat yang dikirim ke endpoint: `{ messages: [{ role: 'user' | 'assistant', content: '...' }] }`.
+## Setup
+1. Upload semua file ke repo GitHub (struktur folder harus tetap sama).
+2. Deploy ke Vercel.
+3. Di Vercel: Settings → Environment Variables → tambahkan:
+   - `GEMINI_API_KEY` = API key dari https://aistudio.google.com/apikey
+4. Redeploy setelah menambahkan env var.
 
 ## Fitur
-- Multi-session chat (tersimpan di localStorage browser)
-- Streaming response + tombol Stop
-- Regenerate response terakhir
-- Copy pesan & copy code block
+- Persona Sajin Komamura (system prompt di `app/api/chat/route.js`)
+- Vision — bisa lampirkan gambar lewat tombol klip di composer
+- Streaming response + tombol Hentikan
+- Ulangi (regenerate) jawaban terakhir
+- Salin pesan & salin code block
 - Markdown-lite: **bold**, *italic*, `code`, ```code block```, [link](url)
-- Toggle channel warna (amber / cyan)
-- Waveform hidup sebagai indikator AI lagi "ngomong"
-- Sidebar sesi, responsive buat mobile
+- Multi-percakapan tersimpan di localStorage browser
+- Animasi: segel tinta hidup, sapuan kuas saat boot, ambient ink wash di background
 
 ## Struktur
 ```
@@ -26,8 +25,14 @@ app/
   layout.js
   page.js
   globals.css
-  api/chat/route.js   <- tempel scrape AI di sini
+  api/chat/route.js     <- persona + panggilan Gemini API
 components/
-  ChatConsole.js       <- logic utama UI
-  Waveform.js           <- animasi oscilloscope
+  ChatConsole.js          <- logic utama UI
+  InkSeal.js               <- animasi segel tinta
 ```
+
+## Ganti persona
+Edit isi `SYSTEM_PROMPT` di `app/api/chat/route.js`.
+
+## Ganti model
+Endpoint di `route.js` pakai `gemini-flash-latest`. Bisa diganti ke versi spesifik seperti `gemini-2.5-flash` kalau butuh behavior yang lebih stabil/tidak berubah otomatis.
