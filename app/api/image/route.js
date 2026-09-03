@@ -90,4 +90,3 @@ async function generateWithGemini(prompt, w, h) {
   const mime = imagePart.inlineData.mimeType || 'image/png'
   return Response.json({ imageUrl: `data:${mime};base64,${imagePart.inlineData.data}`, model: 'gemini-image' })
 }
-400
