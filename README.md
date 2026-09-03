@@ -7,18 +7,26 @@ AI console bertema tinta & segel, persona Sajin Komamura (Bleach), pakai Gemini 
 2. Deploy ke Vercel.
 3. Di Vercel: Settings → Environment Variables → tambahkan:
    - `GEMINI_API_KEY` = API key dari https://aistudio.google.com/apikey
+   - `GROQ_API_KEY` = API key dari https://console.groq.com/keys (buat model-model Groq, free tier)
 4. Redeploy setelah menambahkan env var.
 
 ## Fitur
-- Persona Sajin Komamura (system prompt di `app/api/chat/route.js`)
+- Persona Sajin Komamura (system prompt di `app/api/chat/route.js`, dipakai konsisten di semua model termasuk Groq)
 - Panel "Sedang berpikir..." / "Berpikir selesai" — asli dari Gemini thinking mode, bukan animasi bohongan
-- Vision — bisa lampirkan gambar lewat tombol + di composer
+- Vision — bisa lampirkan gambar lewat tombol + di composer (khusus model Gemini)
+- Multi-model chat: Gemini Flash/Flash Lite/Pro + Groq (GPT-OSS 120B, GPT-OSS 20B, Compound, Compound Mini, Qwen3.6 27B, Qwen3.8 27B)
+- Mode "Buat Gambar" — text-to-image lewat Pollinations (gratis, tanpa API key) atau Gemini Image
+- Model yang kena rate limit otomatis abu-abu/nonaktif di picker selama ~60 detik
 - Streaming response + tombol Hentikan
 - Ulangi (regenerate) jawaban terakhir
 - Salin pesan & salin code block
 - Markdown-lite: **bold**, *italic*, `code`, ```code block```, [link](url)
 - Multi-percakapan tersimpan di localStorage browser
 - Tombol kirim yang animasi morph pas mulai ngetik
+
+## Env var
+- `GEMINI_API_KEY` — wajib untuk model Gemini & mode gambar Gemini Image
+- `GROQ_API_KEY` — wajib kalau mau pakai model-model Groq (opsional kalau cuma mau Gemini)
 
 ## Struktur
 ```
