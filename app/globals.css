@@ -882,6 +882,58 @@ body {
 .picker-item-desc { font-size: 11px; color: var(--muted); margin-top: 1px; }
 .picker-check { color: var(--seal); font-size: 13px; }
 .picker-divider { height: 1px; background: var(--border); margin: 8px 4px; }
+
+/* model kena rate limit — abu-abu & tidak bisa dipilih */
+.picker-item.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
+.picker-item.disabled:hover { background: none; }
+.picker-item.disabled .picker-item-name { color: var(--muted); }
+.picker-item.disabled .picker-item-desc { color: var(--muted); }
+
+/* toggle Chat / Buat Gambar di atas model picker */
+.picker-mode-switch {
+  display: flex;
+  gap: 6px;
+  background: var(--panel-2);
+  border-radius: 10px;
+  padding: 4px;
+  margin-bottom: 8px;
+}
+.picker-mode-btn {
+  flex: 1;
+  border: none;
+  background: none;
+  padding: 7px 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.picker-mode-btn.active {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* hasil generate gambar di chat */
+.generated-image {
+  width: 100%;
+  max-width: 320px;
+  border-radius: 12px;
+  display: block;
+  margin-top: 4px;
+}
+.image-generating {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
 .picker-back {
   justify-content: flex-start;
   gap: 10px;
