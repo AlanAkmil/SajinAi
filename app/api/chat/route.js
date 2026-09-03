@@ -290,10 +290,12 @@ Dalam setiap respons, pertahankan ketenangan, kehormatan, loyalitas, kerendahan 
 // Model Groq: id frontend -> id asli yang dipanggil ke API Groq.
 // Semua ini masuk free tier Groq (dibatasi rate limit, bukan dibayar).
 const GROQ_MODEL_MAP = {
-  'groq-llama-3.3-70b': 'llama-3.3-70b-versatile',
-  'groq-llama-3.1-8b': 'llama-3.1-8b-instant',
   'groq-gpt-oss-120b': 'openai/gpt-oss-120b',
-  'groq-qwen3-32b': 'qwen/qwen3-32b',
+  'groq-gpt-oss-20b': 'openai/gpt-oss-20b',
+  'groq-compound': 'groq/compound',
+  'groq-compound-mini': 'groq/compound-mini',
+  'groq-qwen3.6-27b': 'qwen/qwen3.6-27b',
+  'groq-qwen3.8-27b': 'qwen/qwen3.8-27b',
 }
 
 export async function POST(req) {
@@ -435,8 +437,8 @@ async function handleGemini({ messages, selectedModel, reasoningLevel, webSearch
 }
 
 // Groq pakai endpoint OpenAI-compatible (chat/completions), bukan format Gemini.
-// Groq tidak menerima gambar untuk model-model di GROQ_MODEL_MAP ini, jadi
-// kalau ada gambar terlampir, cuma teksnya yang dikirim (gambar diabaikan).
+// Vision cuma didukung di groq-qwen3.6-27b — model Groq lain nggak menerima
+// gambar sama sekali, jadi kalau ada lampiran, cuma teksnya yang dikirim.
 async function handleGroq({ messages, selectedModel }) {
   const apiKey = process.env.GROQ_API_KEY
   if (!apiKey) {
@@ -448,12 +450,25 @@ async function handleGroq({ messages, selectedModel }) {
 
   const groqModel = GROQ_MODEL_MAP[selectedModel]
 
+  // Cuma Qwen3.6 27B yang vision-capable di daftar model Groq kita — model
+  // lain diberi teksnya doang, gambar (kalau ada) diabaikan.
+  const supportsVision = selectedModel === 'groq-qwen3.6-27b'
+
   const openaiMessages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    ...messages.map((m) => ({
-      role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: m.content || '(pesan tanpa teks)',
-    })),
+    ...messages.map((m) => {
+      const role = m.role === 'assistant' ? 'assistant' : 'user'
+      if (supportsVision && m.image?.data) {
+        return {
+          role,
+          content: [
+            { type: 'text', text: m.content || '(gambar terlampir)' },
+            { type: 'image_url', image_url: { url: `data:${m.image.mimeType};base64,${m.image.data}` } },
+          ],
+        }
+      }
+      return { role, content: m.content || '(pesan tanpa teks)' }
+    }),
   ]
 
   const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
