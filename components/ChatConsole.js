@@ -7,7 +7,23 @@ const MODELS = [
   { id: 'gemini-flash-latest', name: 'Gemini Flash', desc: 'Cepat, seimbang, gratis' },
   { id: 'gemini-flash-lite-latest', name: 'Gemini Flash Lite', desc: 'Lebih ringan, kuota lebih longgar' },
   { id: 'gemini-2.5-pro', name: 'Gemini Pro', desc: 'Paling pintar — butuh billing aktif' },
+  { id: 'groq-llama-3.3-70b', name: 'Llama 3.3 70B', desc: 'Groq — cepat, free tier' },
+  { id: 'groq-llama-3.1-8b', name: 'Llama 3.1 8B', desc: 'Groq — paling ngebut, kuota longgar' },
+  { id: 'groq-gpt-oss-120b', name: 'GPT-OSS 120B', desc: 'Groq — open model OpenAI' },
+  { id: 'groq-qwen3-32b', name: 'Qwen3 32B', desc: 'Groq — kuat buat reasoning' },
 ]
+
+// Model text Groq nggak bisa lihat gambar — cuma Gemini yang vision-capable.
+const VISION_MODELS = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.5-pro']
+
+const IMAGE_MODELS = [
+  { id: 'pollinations-flux', name: 'Flux', desc: 'Pollinations — gratis, no key' },
+  { id: 'pollinations-turbo', name: 'Turbo', desc: 'Pollinations — lebih cepat, kualitas standar' },
+  { id: 'gemini-image', name: 'Gemini Image', desc: 'Nano Banana — butuh GEMINI_API_KEY' },
+]
+
+// Berapa lama model dianggap "kena limit" dan di-grey-out di picker sebelum dicoba lagi.
+const RATE_LIMIT_COOLDOWN_MS = 60_000
 
 const REASONING_LEVELS = [
   { id: 'standard', name: 'Standar', desc: 'Jawab cepat, mikir sebentar' },
@@ -151,6 +167,10 @@ export default function ChatConsole() {
   const [model, setModel] = useState('gemini-flash-latest')
   const [reasoningLevel, setReasoningLevel] = useState('standard')
   const [webSearch, setWebSearch] = useState(false)
+  const [imageMode, setImageMode] = useState(false)
+  const [imageModel, setImageModel] = useState('pollinations-flux')
+  // { [modelId]: timestamp sampai kapan model dianggap kena limit }
+  const [limitedModels, setLimitedModels] = useState({})
 
   const abortRef = useRef(null)
   const messagesEndRef = useRef(null)
@@ -163,6 +183,23 @@ export default function ChatConsole() {
     const t = setTimeout(() => setBooted(true), 1000)
     return () => clearTimeout(t)
   }, [])
+
+  // Re-render tiap beberapa detik biar model yang cooldown-nya udah lewat
+  // otomatis balik normal (nggak abu-abu lagi) tanpa perlu refresh.
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => forceTick((n) => n + 1), 5000)
+    return () => clearInterval(t)
+  }, [])
+
+  function markModelLimited(id) {
+    setLimitedModels((prev) => ({ ...prev, [id]: Date.now() + RATE_LIMIT_COOLDOWN_MS }))
+  }
+
+  function isModelLimited(id) {
+    const until = limitedModels[id]
+    return !!until && until > Date.now()
+  }
 
   useEffect(() => {
     let saved = null
@@ -246,6 +283,8 @@ export default function ChatConsole() {
     const image = overrideImage !== undefined ? overrideImage : pendingImage
     if ((!text && !image) || status === 'busy' || !activeSession) return
 
+    if (imageMode) return sendImageRequest(text)
+
     const userMsg = {
       id: uid(),
       role: 'user',
@@ -299,6 +338,7 @@ export default function ChatConsole() {
       })
 
       if (!res.ok) {
+        if (res.status === 429) markModelLimited(model)
         let errMsg = `HTTP ${res.status}`
         try {
           const errData = await res.json()
@@ -395,6 +435,62 @@ export default function ChatConsole() {
     }
   }
 
+  async function sendImageRequest(text) {
+    if (!text || status === 'busy' || !activeSession) return
+    const sessionId = activeSession.id
+
+    const userMsg = { id: uid(), role: 'user', content: text, ts: Date.now() }
+    updateSessionMessages(sessionId, (msgs) => [...msgs, userMsg])
+    if (activeSession.messages.length === 0) {
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, name: text.slice(0, 32) } : s)))
+    }
+    setInput('')
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    setStatus('busy')
+
+    const assistantId = uid()
+    updateSessionMessages(sessionId, (msgs) => [
+      ...msgs,
+      { id: assistantId, role: 'assistant', content: '', ts: Date.now(), streaming: true, generatingImage: true },
+    ])
+
+    try {
+      const res = await fetch('/api/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: text, model: imageModel }),
+      })
+
+      const data = await res.json().catch(() => ({}))
+
+      if (!res.ok) {
+        if (res.status === 429) markModelLimited(imageModel)
+        throw new Error(data?.error || `HTTP ${res.status}`)
+      }
+
+      updateSessionMessages(sessionId, (msgs) =>
+        msgs.map((m) =>
+          m.id === assistantId
+            ? { ...m, content: '', generatedImage: data.imageUrl, streaming: false, generatingImage: false }
+            : m
+        )
+      )
+      setStatus('idle')
+    } catch (err) {
+      updateSessionMessages(sessionId, (msgs) =>
+        msgs.map((m) =>
+          m.id === assistantId
+            ? { ...m, content: `Gagal membuat gambar: ${err.message}`, streaming: false, generatingImage: false }
+            : m
+        )
+      )
+      setStatus('error')
+      setTimeout(() => setStatus('idle'), 2500)
+    } finally {
+      scrollToBottom()
+    }
+  }
+
   function stopGeneration() {
     abortRef.current?.abort()
   }
@@ -433,9 +529,11 @@ export default function ChatConsole() {
   }
 
   if (!activeSession) return null
-  const canSend = !!(input.trim() || pendingImage)
+  const canSend = imageMode ? !!input.trim() : !!(input.trim() || pendingImage)
   const isEmpty = activeSession.messages.length === 0
   const currentModel = MODELS.find((m) => m.id === model) || MODELS[0]
+  const currentImageModel = IMAGE_MODELS.find((m) => m.id === imageModel) || IMAGE_MODELS[0]
+  const headerModelName = imageMode ? currentImageModel.name : currentModel.name
 
   return (
     <div>
@@ -495,7 +593,7 @@ export default function ChatConsole() {
                 </div>
                 <div className="status-line">
                   <span className={`status-dot ${status === 'busy' ? 'busy' : ''}`} />
-                  {status === 'busy' ? 'sedang menjawab...' : currentModel.name}
+                  {status === 'busy' ? 'sedang menjawab...' : headerModelName}
                 </div>
               </div>
             </button>
@@ -511,56 +609,82 @@ export default function ChatConsole() {
                 }}
               />
               <div className="model-picker">
-                <div className="picker-section-label">Model</div>
-                {MODELS.map((m) => (
+                <div className="picker-mode-switch">
                   <button
-                    key={m.id}
-                    className={`picker-item ${model === m.id ? 'active' : ''}`}
-                    onClick={() => {
-                      setModel(m.id)
-                      setPickerOpen(false)
-                    }}
+                    className={`picker-mode-btn ${!imageMode ? 'active' : ''}`}
+                    onClick={() => setImageMode(false)}
                   >
-                    <div>
-                      <div className="picker-item-name">{m.name}</div>
-                      <div className="picker-item-desc">{m.desc}</div>
-                    </div>
-                    {model === m.id && <span className="picker-check">✓</span>}
+                    Chat
                   </button>
-                ))}
-                <div className="picker-divider" />
-                {!reasoningExpanded ? (
-                  <button className="picker-item" onClick={() => setReasoningExpanded(true)}>
-                    <div>
-                      <div className="picker-item-name">Tingkat Penalaran</div>
-                      <div className="picker-item-desc">
-                        {REASONING_LEVELS.find((r) => r.id === reasoningLevel)?.name}
+                  <button
+                    className={`picker-mode-btn ${imageMode ? 'active' : ''}`}
+                    onClick={() => setImageMode(true)}
+                  >
+                    Buat Gambar
+                  </button>
+                </div>
+
+                <div className="picker-section-label">{imageMode ? 'Model Gambar' : 'Model'}</div>
+                {(imageMode ? IMAGE_MODELS : MODELS).map((m) => {
+                  const limited = isModelLimited(m.id)
+                  const selectedId = imageMode ? imageModel : model
+                  return (
+                    <button
+                      key={m.id}
+                      className={`picker-item ${selectedId === m.id ? 'active' : ''} ${limited ? 'disabled' : ''}`}
+                      disabled={limited}
+                      onClick={() => {
+                        if (limited) return
+                        if (imageMode) setImageModel(m.id)
+                        else setModel(m.id)
+                        setPickerOpen(false)
+                      }}
+                    >
+                      <div>
+                        <div className="picker-item-name">{m.name}</div>
+                        <div className="picker-item-desc">{limited ? 'Kena limit — coba lagi sebentar' : m.desc}</div>
                       </div>
-                    </div>
-                    <ChevronIcon open={false} />
-                  </button>
-                ) : (
-                  <>
-                    <button className="picker-item picker-back" onClick={() => setReasoningExpanded(false)}>
-                      <ChevronIcon rotate={180} />
-                      <div className="picker-item-name">Tingkat Penalaran</div>
+                      {!limited && selectedId === m.id && <span className="picker-check">✓</span>}
                     </button>
-                    {REASONING_LEVELS.map((r) => (
-                      <button
-                        key={r.id}
-                        className={`picker-item ${reasoningLevel === r.id ? 'active' : ''}`}
-                        onClick={() => {
-                          setReasoningLevel(r.id)
-                          setReasoningExpanded(false)
-                        }}
-                      >
+                  )
+                })}
+                {!imageMode && (
+                  <>
+                    <div className="picker-divider" />
+                    {!reasoningExpanded ? (
+                      <button className="picker-item" onClick={() => setReasoningExpanded(true)}>
                         <div>
-                          <div className="picker-item-name">{r.name}</div>
-                          <div className="picker-item-desc">{r.desc}</div>
+                          <div className="picker-item-name">Tingkat Penalaran</div>
+                          <div className="picker-item-desc">
+                            {REASONING_LEVELS.find((r) => r.id === reasoningLevel)?.name}
+                          </div>
                         </div>
-                        {reasoningLevel === r.id && <span className="picker-check">✓</span>}
+                        <ChevronIcon open={false} />
                       </button>
-                    ))}
+                    ) : (
+                      <>
+                        <button className="picker-item picker-back" onClick={() => setReasoningExpanded(false)}>
+                          <ChevronIcon rotate={180} />
+                          <div className="picker-item-name">Tingkat Penalaran</div>
+                        </button>
+                        {REASONING_LEVELS.map((r) => (
+                          <button
+                            key={r.id}
+                            className={`picker-item ${reasoningLevel === r.id ? 'active' : ''}`}
+                            onClick={() => {
+                              setReasoningLevel(r.id)
+                              setReasoningExpanded(false)
+                            }}
+                          >
+                            <div>
+                              <div className="picker-item-name">{r.name}</div>
+                              <div className="picker-item-desc">{r.desc}</div>
+                            </div>
+                            {reasoningLevel === r.id && <span className="picker-check">✓</span>}
+                          </button>
+                        ))}
+                      </>
+                    )}
                   </>
                 )}
               </div>
@@ -596,7 +720,22 @@ export default function ChatConsole() {
                         collapsed={m.thinkingCollapsed}
                         onToggle={() => toggleThinking(activeSession.id, m.id)}
                       />
-                      {(m.content || m.streaming) && (
+                      {m.generatingImage && (
+                        <div className="assistant-content image-generating">
+                          <span className="typing-dots">
+                            <span />
+                            <span />
+                            <span />
+                          </span>
+                          <span>membuat gambar...</span>
+                        </div>
+                      )}
+                      {m.generatedImage && (
+                        <div className="assistant-content">
+                          <img className="generated-image" src={m.generatedImage} alt={m.content || 'gambar hasil generate'} />
+                        </div>
+                      )}
+                      {!m.generatingImage && (m.content || m.streaming) && (
                         <div className="assistant-content">
                           <MessageContent content={m.content} />
                           {m.streaming && !m.content && (
@@ -677,7 +816,13 @@ export default function ChatConsole() {
               style={{ display: 'none' }}
               onChange={handleFileSelect}
             />
-            <button className="attach-btn" onClick={() => setAttachSheetOpen(true)} title="Lampirkan">
+            <button
+              className="attach-btn"
+              onClick={() => setAttachSheetOpen(true)}
+              title={!imageMode && !VISION_MODELS.includes(model) ? 'Model ini tidak mendukung gambar' : 'Lampirkan'}
+              disabled={imageMode || !VISION_MODELS.includes(model)}
+              style={imageMode || !VISION_MODELS.includes(model) ? { opacity: 0.35, pointerEvents: 'none' } : undefined}
+            >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M12 5v14M5 12h14" />
               </svg>
@@ -685,7 +830,7 @@ export default function ChatConsole() {
             <textarea
               ref={textareaRef}
               value={input}
-              placeholder="Sampaikan sesuatu kepada Sajin..."
+              placeholder={imageMode ? 'Deskripsikan gambar yang ingin dibuat...' : 'Sampaikan sesuatu kepada Sajin...'}
               onChange={(e) => {
                 setInput(e.target.value)
                 e.target.style.height = 'auto'
