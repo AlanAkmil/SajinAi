@@ -287,6 +287,15 @@ Namun, jangan pula mengorbankan karakterisasi Sajin hanya karena pertanyaan peng
 
 Dalam setiap respons, pertahankan ketenangan, kehormatan, loyalitas, kerendahan hati, dan rasa tanggung jawab Sajin Komamura.`
 
+// Model Groq: id frontend -> id asli yang dipanggil ke API Groq.
+// Semua ini masuk free tier Groq (dibatasi rate limit, bukan dibayar).
+const GROQ_MODEL_MAP = {
+  'groq-llama-3.3-70b': 'llama-3.3-70b-versatile',
+  'groq-llama-3.1-8b': 'llama-3.1-8b-instant',
+  'groq-gpt-oss-120b': 'openai/gpt-oss-120b',
+  'groq-qwen3-32b': 'qwen/qwen3-32b',
+}
+
 export async function POST(req) {
   try {
     const { messages, model, reasoningLevel, webSearch } = await req.json()
@@ -295,6 +304,27 @@ export async function POST(req) {
       return Response.json({ error: 'Pesan tidak boleh kosong.' }, { status: 400 })
     }
 
+    // Whitelist model yang boleh dipanggil dari frontend — jangan percaya input mentah.
+    const ALLOWED_MODELS = [
+      'gemini-flash-latest',
+      'gemini-flash-lite-latest',
+      'gemini-2.5-pro',
+      ...Object.keys(GROQ_MODEL_MAP),
+    ]
+    const selectedModel = ALLOWED_MODELS.includes(model) ? model : 'gemini-flash-latest'
+
+    if (selectedModel.startsWith('groq-')) {
+      return handleGroq({ messages, selectedModel })
+    }
+    return handleGemini({ messages, selectedModel, reasoningLevel, webSearch })
+  } catch (error) {
+    console.error('Chat route error:', error?.message)
+    return Response.json({ error: error?.message || 'Terjadi kesalahan pada server.' }, { status: 500 })
+  }
+}
+
+async function handleGemini({ messages, selectedModel, reasoningLevel, webSearch }) {
+  try {
     const apiKey = process.env.GEMINI_API_KEY
     if (!apiKey) {
       return Response.json(
@@ -302,10 +332,6 @@ export async function POST(req) {
         { status: 500 }
       )
     }
-
-    // Whitelist model yang boleh dipanggil dari frontend — jangan percaya input mentah.
-    const ALLOWED_MODELS = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.5-pro']
-    const selectedModel = ALLOWED_MODELS.includes(model) ? model : 'gemini-flash-latest'
 
     // Tingkat penalaran -> thinkingBudget Gemini asli.
     // standar = budget kecil (mikir sebentar), tinggi = dynamic (model boleh mikir sedalam perlu).
@@ -406,4 +432,90 @@ export async function POST(req) {
     console.error('Gemini route error:', error?.message)
     return Response.json({ error: error?.message || 'Terjadi kesalahan pada server.' }, { status: 500 })
   }
+}
+
+// Groq pakai endpoint OpenAI-compatible (chat/completions), bukan format Gemini.
+// Groq tidak menerima gambar untuk model-model di GROQ_MODEL_MAP ini, jadi
+// kalau ada gambar terlampir, cuma teksnya yang dikirim (gambar diabaikan).
+async function handleGroq({ messages, selectedModel }) {
+  const apiKey = process.env.GROQ_API_KEY
+  if (!apiKey) {
+    return Response.json(
+      { error: 'GROQ_API_KEY belum di-set. Tambahkan di Vercel → Settings → Environment Variables.' },
+      { status: 500 }
+    )
+  }
+
+  const groqModel = GROQ_MODEL_MAP[selectedModel]
+
+  const openaiMessages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    ...messages.map((m) => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.content || '(pesan tanpa teks)',
+    })),
+  ]
+
+  const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: groqModel,
+      messages: openaiMessages,
+      stream: true,
+    }),
+  })
+
+  if (!groqRes.ok || !groqRes.body) {
+    const errText = await groqRes.text()
+    // Rate limit Groq balikin 429 — teruskan status-nya biar frontend bisa
+    // nge-grey-out model ini di picker.
+    return Response.json({ error: `Groq error [${groqRes.status}]: ${errText}` }, { status: groqRes.status })
+  }
+
+  // Konversi SSE OpenAI-style ke protokol ndjson yang sama dipakai Gemini,
+  // biar frontend nggak perlu tahu bedanya provider.
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const reader = groqRes.body.getReader()
+      let buffer = ''
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed.startsWith('data: ')) continue
+            const jsonStr = trimmed.slice(6)
+            if (!jsonStr || jsonStr === '[DONE]') continue
+            try {
+              const parsed = JSON.parse(jsonStr)
+              const delta = parsed?.choices?.[0]?.delta?.content
+              if (delta) {
+                controller.enqueue(encoder.encode(JSON.stringify({ type: 'answer', text: delta }) + '\n'))
+              }
+            } catch {
+              // chunk belum lengkap, skip
+            }
+          }
+        }
+        controller.close()
+      } catch (err) {
+        controller.error(err)
+      }
+    },
+  })
+
+  return new Response(stream, {
+    headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+  })
 }
