@@ -7,14 +7,19 @@ const MODELS = [
   { id: 'gemini-flash-latest', name: 'Gemini Flash', desc: 'Cepat, seimbang, gratis' },
   { id: 'gemini-flash-lite-latest', name: 'Gemini Flash Lite', desc: 'Lebih ringan, kuota lebih longgar' },
   { id: 'gemini-2.5-pro', name: 'Gemini Pro', desc: 'Paling pintar — butuh billing aktif' },
-  { id: 'groq-llama-3.3-70b', name: 'Llama 3.3 70B', desc: 'Groq — cepat, free tier' },
-  { id: 'groq-llama-3.1-8b', name: 'Llama 3.1 8B', desc: 'Groq — paling ngebut, kuota longgar' },
-  { id: 'groq-gpt-oss-120b', name: 'GPT-OSS 120B', desc: 'Groq — open model OpenAI' },
-  { id: 'groq-qwen3-32b', name: 'Qwen3 32B', desc: 'Groq — kuat buat reasoning' },
+  { id: 'groq-gpt-oss-120b', name: 'GPT-OSS 120B', desc: 'Groq — reasoning tinggi' },
+  { id: 'groq-gpt-oss-20b', name: 'GPT-OSS 20B', desc: 'Groq — paling ngebut' },
+  { id: 'groq-compound', name: 'Compound', desc: 'Groq — agentic, web search + code exec bawaan' },
+  { id: 'groq-compound-mini', name: 'Compound Mini', desc: 'Groq — versi ringan Compound' },
+  { id: 'groq-qwen3.6-27b', name: 'Qwen3.6 27B', desc: 'Groq — reasoning & vision' },
+  { id: 'groq-qwen3.8-27b', name: 'Qwen3.8 27B', desc: 'Groq — versi terbaru Qwen' },
 ]
 
-// Model text Groq nggak bisa lihat gambar — cuma Gemini yang vision-capable.
+// Model text Groq nggak bisa lihat gambar — cuma Gemini yang vision-capable
+// sebagai model utama. Qwen3.6 juga vision-capable tapi cuma dipakai sebagai
+// fallback otomatis kalau Gemini gagal/limit.
 const VISION_MODELS = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.5-pro']
+const VISION_FALLBACK_MODEL = 'groq-qwen3.6-27b'
 
 const IMAGE_MODELS = [
   { id: 'pollinations-flux', name: 'Flux', desc: 'Pollinations — gratis, no key' },
@@ -323,28 +328,32 @@ export default function ChatConsole() {
     const controller = new AbortController()
     abortRef.current = controller
 
-    try {
-      const history = [...activeSession.messages, userMsg].map(({ role, content, image }) => ({
-        role,
-        content,
-        image: image ? { mimeType: image.mimeType, data: image.data } : undefined,
-      }))
+    const history = [...activeSession.messages, userMsg].map(({ role, content, image }) => ({
+      role,
+      content,
+      image: image ? { mimeType: image.mimeType, data: image.data } : undefined,
+    }))
 
+    // Satu percobaan kirim+stream ke satu model. Throw kalau gagal, biar
+    // caller yang mutusin mau fallback ke model lain atau nyerah.
+    async function attempt(requestModel) {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history, model, reasoningLevel, webSearch }),
+        body: JSON.stringify({ messages: history, model: requestModel, reasoningLevel, webSearch }),
         signal: controller.signal,
       })
 
       if (!res.ok) {
-        if (res.status === 429) markModelLimited(model)
+        if (res.status === 429) markModelLimited(requestModel)
         let errMsg = `HTTP ${res.status}`
         try {
           const errData = await res.json()
           if (errData?.error) errMsg = errData.error
         } catch {}
-        throw new Error(errMsg)
+        const err = new Error(errMsg)
+        err.statusCode = res.status
+        throw err
       }
 
       if (res.body && res.body.getReader) {
@@ -392,6 +401,34 @@ export default function ChatConsole() {
         updateSessionMessages(sessionId, (msgs) =>
           msgs.map((m) => (m.id === assistantId ? { ...m, content: data.content ?? '' } : m))
         )
+      }
+    }
+
+    // Reset bubble assistant sebelum percobaan baru (dipakai juga pas fallback).
+    function resetAssistantBubble(note) {
+      updateSessionMessages(sessionId, (msgs) =>
+        msgs.map((m) =>
+          m.id === assistantId
+            ? { ...m, content: note || '', thinking: '', thinkingDone: false, thinkingCollapsed: false, streaming: true }
+            : m
+        )
+      )
+    }
+
+    try {
+      try {
+        await attempt(model)
+      } catch (err) {
+        if (err.name === 'AbortError') throw err
+
+        // Vision Gemini gagal (limit/error) & ada gambar -> auto-fallback ke Qwen3.6.
+        const canFallback = image && VISION_MODELS.includes(model) && model !== VISION_FALLBACK_MODEL
+        if (!canFallback) throw err
+
+        resetAssistantBubble('Gemini kena kendala, otomatis coba Qwen3.6 (fallback vision)...')
+        await new Promise((r) => setTimeout(r, 400))
+        resetAssistantBubble('')
+        await attempt(VISION_FALLBACK_MODEL)
       }
 
       updateSessionMessages(sessionId, (msgs) =>
