@@ -95,10 +95,10 @@ async function generateWithGemini(prompt, w, h) {
   return Response.json({ imageUrl: `data:${mime};base64,${imagePart.inlineData.data}`, model: 'gemini-image' })
 }
 
-// Hugging Face Inference Providers — FLUX.1-schnell (Black Forest Labs).
-// Dipilih FLUX.1-schnell (bukan FLUX.1-dev) karena schnell yang beneran dihost
-// gratis lewat provider hf-inference bawaan; FLUX.1-dev cuma tersedia lewat
-// provider fal (berbayar/butuh billing terpisah).
+// Hugging Face Inference Providers — Stable Diffusion 3 Medium (Stability AI).
+// Dipilih model ini (bukan FLUX) karena ini contoh resmi terbaru dari dokumentasi
+// HF buat provider hf-inference — model FLUX sering gonta-ganti/di-deprecate dari
+// provider gratis ini dan pindah ke provider berbayar (fal-ai dll).
 async function generateWithHuggingFace(prompt) {
   const hfToken = process.env.HF_TOKEN
   if (!hfToken) {
@@ -108,7 +108,7 @@ async function generateWithHuggingFace(prompt) {
     )
   }
 
-  const res = await fetch('https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell', {
+  const res = await fetch('https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-3-medium-diffusers', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${hfToken}`,
@@ -128,9 +128,15 @@ async function generateWithHuggingFace(prompt) {
     return Response.json(
       {
         error:
-          'Akses ditolak (403). Buka huggingface.co/black-forest-labs/FLUX.1-schnell, pastiin login pakai akun yang sama dengan token, baru coba lagi.',
+          'Akses ditolak (403). Buka huggingface.co/stabilityai/stable-diffusion-3-medium-diffusers, pastiin login pakai akun yang sama dengan token, baru coba lagi.',
       },
       { status: 403 }
+    )
+  }
+  if (res.status === 410) {
+    return Response.json(
+      { error: 'Model ini udah nggak didukung provider hf-inference lagi. Cek model pengganti di huggingface.co/docs/inference-providers/tasks/text-to-image' },
+      { status: 410 }
     )
   }
   if (!res.ok) {
