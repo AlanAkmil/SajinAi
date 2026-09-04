@@ -25,7 +25,7 @@ const IMAGE_MODELS = [
   { id: 'pollinations-flux', name: 'Flux', desc: 'Pollinations — gratis, no key' },
   { id: 'pollinations-turbo', name: 'Turbo', desc: 'Pollinations — lebih cepat, kualitas standar' },
   { id: 'gemini-image', name: 'Nano Banana 2', desc: 'Gemini 3.1 — kualitas terbaik, gratis' },
-  { id: 'hf-flux', name: 'FLUX.1 Schnell', desc: 'Hugging Face — open-weight, gratis, butuh HF_TOKEN' },
+  { id: 'hf-flux', name: 'SD3 Medium', desc: 'Hugging Face — Stable Diffusion 3, gratis, butuh HF_TOKEN' },
 ]
 
 // Berapa lama model dianggap "kena limit" dan di-grey-out di picker sebelum dicoba lagi.
